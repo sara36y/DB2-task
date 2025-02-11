@@ -1,0 +1,775 @@
+-------------------------DATA BASE TASK 1--------------------------------
+
+
+--------------------------------task 9----------------------------------
+----------------------create user1 and user2--------------------
+
+------
+
+-- Creating the BookTypes table
+BEGIN
+    EXECUTE IMMEDIATE '
+        CREATE TABLE BookTypes (
+            id NUMBER PRIMARY KEY,
+            type_name VARCHAR2(50) NOT NULL,
+            fee_rate NUMBER NOT NULL
+        )
+    ';
+END;
+
+-- Creating the Books table
+BEGIN
+    EXECUTE IMMEDIATE '
+        CREATE TABLE Books (
+            id NUMBER PRIMARY KEY,
+            title VARCHAR2(255) NOT NULL,
+            author VARCHAR2(255) NOT NULL,
+            availability VARCHAR2(20) CHECK (availability IN (''Available'', ''Borrowed'')),
+            type_id NUMBER,
+            FOREIGN KEY (type_id) REFERENCES BookTypes(id)
+        )
+    ';
+END;
+
+
+
+--task 9 insert in user2
+
+-------tabel booktypes
+INSERT INTO user1.BookTypes (id, type_name, fee_rate) VALUES (1, 'Regular', 1);
+
+INSERT INTO User1.BookTypes (id, type_name, fee_rate) VALUES (2, 'Reference', 2);
+
+INSERT INTO User1.BookTypes (id, type_name, fee_rate) VALUES (3, 'Regular', 3);
+
+INSERT INTO User1.BookTypes (id, type_name, fee_rate) VALUES (4, 'Reference', 4);
+
+INSERT INTO User1.BookTypes (id, type_name, fee_rate) VALUES (5, 'Reference', 5);
+
+
+
+------- Insert 5 rows into Books
+BEGIN
+    INSERT INTO user1.Books (id, title, author, availability, type_id) 
+    VALUES (1, '1984', 'George Orwell', 'Available', 1);
+
+    INSERT INTO user1.Books (id, title, author, availability, type_id) 
+    VALUES (2, 'A Brief History of Time', 'Stephen Hawking', 'Borrowed', 3);
+
+    INSERT INTO user1.Books (id, title, author, availability, type_id) 
+    VALUES (3, 'Sapiens', 'Yuval Noah Harari', 'Available', 4);
+
+    INSERT INTO user1.Books (id, title, author, availability, type_id) 
+    VALUES (4, 'The Hobbit', 'J.R.R. Tolkien', 'Available', 5);
+
+    INSERT INTO user1.Books (id, title, author, availability, type_id) 
+    VALUES (5, 'To Kill a Mockingbird', 'Harper Lee', 'Borrowed', 1);
+END;
+/
+
+-------------------------------------------USER MANAGER SCHEMA-----------------------------------------------
+
+
+--------------------------Task 1----------------------------------
+----------------Select all records from the table user1.Booktypes
+
+-- Select all records from the Booktypes table
+SELECT * FROM user1.Booktypes;
+
+
+-- Clear the NotificationLogs table and remove outdated objects
+DELETE FROM NotificationLogs;
+COMMIT;
+DROP PROCEDURE Generate_Overdue_Notifications;
+DROP SEQUENCE Penalties_seq;
+DROP FUNCTION Calculate_Late_Fee;
+
+
+-- Create a sequence to generate unique IDs for NotificationLogs
+CREATE SEQUENCE NotificationLogs_SEQ
+START WITH 1
+INCREMENT BY 1
+NOCACHE
+NOCYCLE;
+
+
+-- Procedure to generate notifications for overdue borrowed books
+CREATE OR REPLACE PROCEDURE Generate_Overdue_Notifications AS
+BEGIN
+    INSERT INTO NotificationLogs (id, student_id, book_id, overdue_days, notification_date)
+    SELECT 
+        NotificationLogs_SEQ.NEXTVAL, -- Generate unique IDs
+        br.student_id, 
+        br.book_id, 
+        ROUND(SYSDATE - br.return_date - 7), -- Calculate overdue days beyond 7 days
+        SYSDATE -- Today's date
+    FROM BorrowingRecords br
+    WHERE br.return_date < SYSDATE AND br.status = 'Borrowed' 
+          AND (SYSDATE - br.return_date) > 7; -- Only include overdue books
+
+    COMMIT; -- Save changes
+END;
+/
+
+
+-- Execute the procedure and check the results
+EXEC Generate_Overdue_Notifications;
+SELECT * FROM NotificationLogs;
+
+
+
+
+--------------------------------------- TASK 2-------------------------------------------
+---------------------Penalty Calculation for Late Book Returns
+
+-- Create a sequence 
+
+CREATE SEQUENCE Penalties_seq
+START WITH 1
+INCREMENT BY 1;
+
+-- Function: Calculate_Late_Fee
+-- Calculates the late fee for a given borrowing record and inserts it into the Penalties table 
+
+CREATE OR REPLACE FUNCTION Calculate_Late_Fee (
+    p_borrow_record_id NUMBER 
+) RETURN NUMBER IS
+    v_overdue_days NUMBER; 
+    v_fee_rate NUMBER; 
+    v_student_id NUMBER; 
+    v_total_fee NUMBER; 
+BEGIN
+    -- Fetch overdue days, fee rate, and student ID for the given record
+    SELECT TRUNC(SYSDATE - br.return_date), bt.fee_rate, br.student_id
+    INTO v_overdue_days, v_fee_rate, v_student_id
+    FROM BorrowingRecords br
+    JOIN user1.Books b ON br.book_id = b.id
+    JOIN user1.BookTypes bt ON b.type_id = bt.id
+    WHERE br.id = p_borrow_record_id;
+
+    -- Calculate total fee if overdue days exceed the grace period (7 days)
+    IF v_overdue_days > 7 THEN
+        v_total_fee := (v_overdue_days - 7) * v_fee_rate; 
+    ELSE
+        v_total_fee := 0; -- No fee for timely returns
+    END IF;
+
+    -- Insert penalty into the Penalties table if the fee is greater than 0
+    IF v_total_fee > 0 THEN
+        INSERT INTO Penalties (id, student_id, amount, reason)
+        VALUES (
+            Penalties_seq.NEXTVAL, -- Unique ID using the sequence
+            v_student_id,
+            v_total_fee,
+            'Late return'
+        );
+    END IF;
+
+    -- Return the total late fee
+    RETURN v_total_fee;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RAISE_APPLICATION_ERROR(-20001, 'No matching record found in BorrowingRecords.');
+    WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR(-20002, 'Unexpected error: ' || SQLERRM);
+END;
+/
+
+-- Process all records with overdue returns and calculate penalties
+BEGIN
+    FOR overdue_record IN (
+        SELECT id -- Borrowing record ID
+        FROM BorrowingRecords
+        WHERE return_date < SYSDATE AND status = 'Borrowed'
+    ) LOOP
+        DECLARE
+            v_fee NUMBER; -- Variable to store the calculated fee
+        BEGIN
+            -- Call the function to calculate the late fee
+            v_fee := Calculate_Late_Fee(overdue_record.id);
+
+            -- Print the fee for each record
+            DBMS_OUTPUT.PUT_LINE('Record ID: ' || overdue_record.id || ', Late Fee: ' || v_fee);
+        END;
+    END LOOP;
+END;
+/
+
+
+SELECT * FROM Penalties;
+
+
+DELETE FROM Penalties;
+COMMIT;
+DROP FUNCTION Calculate_Late_Fee;
+DROP SEQUENCE Penalties_seq;
+
+
+SELECT * FROM BorrowingRecords;
+
+
+
+
+
+
+-----------------------------------Task 3-----------------------------------------
+-------------------------Trigger to Enforce Borrowing Rules
+
+CREATE OR REPLACE TRIGGER check_borrowing
+BEFORE INSERT ON BorrowingRecords
+FOR EACH ROW
+DECLARE
+    borrowed_count INTEGER; -- Number of currently borrowed books
+    overdue_count INTEGER;  -- Number of overdue books
+BEGIN
+    -- Check the maximum borrowing limit (3 books)
+
+    SELECT COUNT(*)
+    INTO borrowed_count
+    FROM BorrowingRecords
+    WHERE student_id = :NEW.student_id
+    AND return_date IS NULL
+    AND status = 'Borrowed'; -- Only count books that are not yet returned
+
+    -- Raise an error if the borrowing limit is exceeded
+    IF borrowed_count >= 3 THEN
+        RAISE_APPLICATION_ERROR(-20002, 'You have reached the maximum borrowing limit.');
+    END IF;
+
+    -- Check if there are overdue books (books not returned on time)
+    SELECT COUNT(*)
+    INTO overdue_count
+    FROM BorrowingRecords
+    WHERE student_id = :NEW.student_id
+    AND (return_date < SYSDATE OR return_date IS NULL) -- Check for overdue or unreturned books
+    AND status = 'Borrowed'; -- Only count overdue books
+
+    -- Raise an error if the student has overdue books
+    IF overdue_count > 0 THEN
+        RAISE_APPLICATION_ERROR(-20003, 'You have overdue books. Return them before borrowing new ones.');
+    END IF;
+
+EXCEPTION
+    -- Handle unexpected errors
+    WHEN OTHERS THEN
+        RAISE_APPLICATION_ERROR(-20001, 'An unexpected error occurred: ' || SQLERRM);
+END;
+
+-- Drop the trigger (cleanup)
+DROP TRIGGER check_borrowing;
+
+
+
+
+
+
+
+
+
+
+-------------------------------------------TASK 4------------------------------------
+--------------------------Audit Trigger for BorrowingRecords Table
+
+-- Create a sequence for the AuditTrail table
+CREATE SEQUENCE AuditTrail_seq START WITH 1;
+
+-- Create a trigger to log changes in the BorrowingRecords table
+CREATE OR REPLACE TRIGGER trg_borrowing_audit
+AFTER INSERT OR UPDATE OR DELETE ON BorrowingRecords
+FOR EACH ROW
+BEGIN
+    -- For INSERT operation
+
+    IF INSERTING THEN
+        INSERT INTO AuditTrail (
+            id,
+            table_name,
+            operation,
+            old_data,
+            new_data,
+            timestamp
+        ) VALUES (
+            AuditTrail_seq.NEXTVAL,                              -- Generate a unique ID using the sequence
+            'BorrowingRecords',                                  -- Name of the affected table
+            'INSERT',                                            -- Type of operation (INSERT)
+            'N/A',                                               -- Old data is not applicable for INSERT
+            'New: ID=' || :NEW.id || 
+            ', BookID=' || :NEW.book_id || 
+            ', StudentID=' || :NEW.student_id || 
+            ', BorrowDate=' || TO_CHAR(:NEW.borrow_date, 'YYYY-MM-DD') || 
+            ', ReturnDate=' || TO_CHAR(:NEW.return_date, 'YYYY-MM-DD') || 
+            ', Status=' || :NEW.status,                         -- New data for the inserted record
+            SYSDATE                                             -- Current timestamp
+        );
+
+    -- For UPDATE operation
+
+    ELSIF UPDATING THEN
+        INSERT INTO AuditTrail (
+            id,
+            table_name,
+            operation,
+            old_data,
+            new_data,
+            timestamp
+        ) VALUES (
+            AuditTrail_seq.NEXTVAL,                              -- Generate a unique ID using the sequence
+            'BorrowingRecords',                                  -- Name of the affected table
+            'UPDATE',                                            -- Type of operation (UPDATE)
+            'Old: ID=' || :OLD.id || 
+            ', BookID=' || :OLD.book_id || 
+            ', StudentID=' || :OLD.student_id || 
+            ', BorrowDate=' || TO_CHAR(:OLD.borrow_date, 'YYYY-MM-DD') || 
+            ', ReturnDate=' || TO_CHAR(:OLD.return_date, 'YYYY-MM-DD') || 
+            ', Status=' || :OLD.status,                         -- Old data before the update
+            'New: ID=' || :NEW.id || 
+            ', BookID=' || :NEW.book_id || 
+            ', StudentID=' || :NEW.student_id || 
+            ', BorrowDate=' || TO_CHAR(:NEW.borrow_date, 'YYYY-MM-DD') || 
+            ', ReturnDate=' || TO_CHAR(:NEW.return_date, 'YYYY-MM-DD') || 
+            ', Status=' || :NEW.status,                         -- New data after the update
+            SYSDATE                                             -- Current timestamp
+        );
+
+    -- For DELETE operation
+
+    ELSIF DELETING THEN
+        INSERT INTO AuditTrail (
+            id,
+            table_name,
+            operation,
+            old_data,
+            new_data,
+            timestamp
+        ) VALUES (
+            AuditTrail_seq.NEXTVAL,                              -- Generate a unique ID using the sequence
+            'BorrowingRecords',                                  -- Name of the affected table
+            'DELETE',                                            -- Type of operation (DELETE)
+            'Old: ID=' || :OLD.id || 
+            ', BookID=' || :OLD.book_id || 
+            ', StudentID=' || :OLD.student_id || 
+            ', BorrowDate=' || TO_CHAR(:OLD.borrow_date, 'YYYY-MM-DD') || 
+            ', ReturnDate=' || TO_CHAR(:OLD.return_date, 'YYYY-MM-DD') || 
+            ', Status=' || :OLD.status,                         -- Old data of the deleted record
+            'N/A',                                               -- New data is not applicable for DELETE
+            SYSDATE                                             -- Current timestamp
+        );
+    END IF;
+END;
+/
+
+
+SELECT * FROM AuditTrail;
+
+-- Example: Update a record in BorrowingRecords
+UPDATE BorrowingRecords 
+SET status = 'Returned', return_date = SYSDATE
+WHERE id = 2;
+
+-- Example: Delete a record from BorrowingRecords
+DELETE FROM BorrowingRecords
+WHERE id = 2;
+
+-- Drop the audit trigger (cleanup)
+DROP TRIGGER trg_borrowing_audit;
+
+
+
+
+
+
+-------------------------------------------TASK 5---------------------------------------------
+-------------------------------Borrowing History Report for a Student
+
+SET SERVEROUTPUT ON;
+
+DECLARE
+   
+    v_student_id NUMBER := &student_id; 
+    
+    -- Declare a cursor to retrieve the borrowing history of the student
+    CURSOR borrowing_history_cursor (p_student_id NUMBER) IS
+        SELECT 
+            b.title AS book_title,                             -- Book title
+            br.borrow_date,                                    -- Borrow date
+            br.return_date,                                    -- Return date
+            CASE                                               -- Borrowing status
+                WHEN br.return_date IS NULL AND SYSDATE > br.borrow_date + 7 THEN 'Overdue'
+                WHEN br.return_date IS NOT NULL AND br.return_date > br.borrow_date + 7 THEN 'Overdue'
+                ELSE 'On Time'
+            END AS status,
+            NVL(p.amount, 0) AS penalty_amount                -- Penalty amount (0 if no penalty)
+        FROM 
+        --Borrowing records table Join with Books table
+            BorrowingRecords br                               
+        JOIN user1.Books b ON br.book_id = b.id               
+        LEFT JOIN Penalties p ON br.student_id = p.student_id 
+        WHERE br.student_id = p_student_id                   
+        ORDER BY br.borrow_date DESC;               
+
+    -- Declare a temporary variable to hold each record
+    borrowing_record borrowing_history_cursor%ROWTYPE;
+
+BEGIN
+    -- Open the cursor for the provided student ID
+    OPEN borrowing_history_cursor(v_student_id);
+
+   
+    DBMS_OUTPUT.PUT_LINE('Borrowing History Report for Student ID: ' || v_student_id);
+    DBMS_OUTPUT.PUT_LINE('---------------------------------------------------------');
+    DBMS_OUTPUT.PUT_LINE('Book Title       | Borrow Date   | Return Date   | Status   | Penalty');
+
+ 
+    LOOP
+        FETCH borrowing_history_cursor INTO borrowing_record; -- Fetch the next record
+        EXIT WHEN borrowing_history_cursor%NOTFOUND;          -- Exit when no more records are found
+
+        -- Print the record details
+        DBMS_OUTPUT.PUT_LINE(
+            RPAD(borrowing_record.book_title, 15) || ' | ' ||                    
+            TO_CHAR(borrowing_record.borrow_date, 'YYYY-MM-DD') || '    | ' ||  
+            NVL(TO_CHAR(borrowing_record.return_date, 'YYYY-MM-DD'), 'Not Returned') || ' | ' || 
+            RPAD(borrowing_record.status, 8) || ' | ' ||                          
+            borrowing_record.penalty_amount || ' LE '                             
+        );
+    END LOOP;
+
+    -- Close the cursor
+    CLOSE borrowing_history_cursor;
+END;
+/
+
+
+
+
+-------------------------------------------TASK 6-----------------------------------------------
+-----------------------------Return Borrowed Books for a Student
+
+SET SERVEROUTPUT ON;
+
+DECLARE
+    -- Declare variables
+    v_student_id NUMBER := &student_id; -- Student ID
+    v_book_id NUMBER; -- Book ID
+    v_penalty_due NUMBER := 0; -- Total penalties due
+
+    -- Cursor to check for overdue penalties
+    CURSOR penalty_cursor IS
+        SELECT NVL(SUM(amount), 0) AS total_penalty
+        FROM Penalties
+        WHERE student_id = v_student_id;
+
+    -- Cursor to retrieve books to be returned
+    CURSOR return_books_cursor IS
+        SELECT br.id AS borrowing_record_id, br.book_id
+        FROM BorrowingRecords br
+        WHERE br.student_id = v_student_id AND br.status = 'Borrowed';
+
+    -- Variable to store book data during return
+    v_borrowing_record return_books_cursor%ROWTYPE;
+
+BEGIN
+    -- Check for overdue penalties
+    OPEN penalty_cursor;
+    FETCH penalty_cursor INTO v_penalty_due;
+    CLOSE penalty_cursor;
+
+    IF v_penalty_due > 0 THEN
+        DBMS_OUTPUT.PUT_LINE('Error: Student has overdue penalties of ' || v_penalty_due || ' USD.');
+        RETURN;
+    END IF;
+
+    -- Open cursor for books to be returned
+    OPEN return_books_cursor;
+
+    BEGIN
+        -- Start the transaction
+        LOOP
+            FETCH return_books_cursor INTO v_borrowing_record;
+            EXIT WHEN return_books_cursor%NOTFOUND;
+
+            -- Update the status in BorrowingRecords
+            UPDATE BorrowingRecords
+            SET return_date = SYSDATE,
+                status = 'Returned'
+            WHERE id = v_borrowing_record.borrowing_record_id;
+
+            -- Update the book availability in the Books table
+            UPDATE user1.Books
+            SET availability = 'Available'
+            WHERE id = v_borrowing_record.book_id;
+        END LOOP;
+
+        -- Commit the changes
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('Books returned successfully for student ID: ' || v_student_id);
+
+    EXCEPTION
+        WHEN OTHERS THEN
+            -- Rollback in case of an error
+            ROLLBACK;
+            DBMS_OUTPUT.PUT_LINE('Error: Transaction failed. All changes have been rolled back.');
+    END;
+
+    -- Close the cursor
+    CLOSE return_books_cursor;
+END;
+/
+
+-- Display the updated BorrowingRecords table
+SELECT * FROM BorrowingRecords;
+
+
+
+
+--------------------------------------------------TASK 7--------------------------------------------------
+-----------------------------Display Borrowing Records with Overdue Calculation
+
+SET SERVEROUTPUT ON;
+
+DECLARE
+    -- Declare variables
+    v_book_id        BorrowingRecords.book_id%TYPE; -- Book ID
+    v_student_name   students.name%TYPE; -- Student Name
+    v_borrow_date    BorrowingRecords.borrow_date%TYPE; -- Borrow Date
+    v_return_date    BorrowingRecords.return_date%TYPE; -- Return Date
+    v_status         BorrowingRecords.status%TYPE; -- Borrowing Status
+    v_overdue_days   NUMBER; -- Overdue Days
+
+    -- Cursor to fetch borrowing records and their status
+    CURSOR books_cursor IS
+        SELECT br.book_id, 
+               s.name AS student_name, 
+               br.borrow_date, 
+               br.return_date, 
+               br.status
+          FROM BorrowingRecords br
+          LEFT JOIN students s ON br.student_id = s.id;
+
+BEGIN
+    -- Open the cursor and iterate through the records
+    FOR book_record IN books_cursor LOOP
+        -- Assign values to variables
+        v_book_id := book_record.book_id;
+        v_student_name := book_record.student_name;
+        v_borrow_date := book_record.borrow_date;
+        v_return_date := book_record.return_date;
+        v_status := book_record.status;
+
+        -- Calculate overdue days if applicable
+        IF v_status = 'Borrowed' AND v_return_date IS NULL AND v_borrow_date < SYSDATE THEN
+            v_overdue_days := TRUNC(SYSDATE - v_borrow_date);
+        ELSE
+            v_overdue_days := NULL;
+        END IF;
+
+        -- Display book details
+        DBMS_OUTPUT.PUT_LINE('--------------------------------------------------');
+        DBMS_OUTPUT.PUT_LINE('Book ID      : ' || v_book_id);
+        DBMS_OUTPUT.PUT_LINE('Status       : ' || v_status);
+
+        -- If the book is borrowed, display borrower details and borrow date
+        IF v_status = 'Borrowed' THEN
+            DBMS_OUTPUT.PUT_LINE('Borrowed By  : ' || v_student_name);
+            DBMS_OUTPUT.PUT_LINE('Borrow Date  : ' || TO_CHAR(v_borrow_date, 'DD-MON-YYYY'));
+            IF v_overdue_days IS NOT NULL THEN
+                DBMS_OUTPUT.PUT_LINE('Overdue Days : ' || v_overdue_days);
+            END IF;
+        ELSE
+            DBMS_OUTPUT.PUT_LINE('Return Date  : ' || TO_CHAR(v_return_date, 'DD-MON-YYYY'));
+        END IF;
+
+        DBMS_OUTPUT.PUT_LINE('--------------------------------------------------');
+    END LOOP;
+END;
+/
+
+
+
+---------------------------------------------------TASK 8---------------------------------------------------
+---------------------------------Procedure to Suspend Students with Penalties Above a Threshold
+
+CREATE OR REPLACE PROCEDURE suspend_students_if_penalties_above_threshold IS
+    -- Variables
+    v_total_penalties NUMBER; -- Total unpaid penalties
+    v_threshold NUMBER := 50; -- Threshold for penalties
+BEGIN
+    -- Loop through all students with unpaid penalties
+    FOR student_record IN (
+        SELECT DISTINCT p.student_id
+        FROM penalties p
+        WHERE p.amount > 0
+    ) LOOP
+        -- Calculate total unpaid penalties for the student
+        SELECT SUM(p.amount) 
+        INTO v_total_penalties
+        FROM penalties p
+        WHERE p.student_id = student_record.student_id
+        AND p.amount > 0; -- Only unpaid penalties
+
+        -- If total penalties exceed the threshold
+        IF v_total_penalties > v_threshold THEN
+            -- Update the student's membership status to "Suspended"
+            UPDATE students
+            SET membership_status = 'Suspended'
+            WHERE id = student_record.student_id;
+
+            -- Display a message
+            DBMS_OUTPUT.PUT_LINE('Student ID ' || student_record.student_id || ' has been suspended.');
+        END IF;
+    END LOOP;
+
+    -- Commit the changes
+    COMMIT;
+END suspend_students_if_penalties_above_threshold;
+/
+
+-- Query to verify the suspension status and penalties for a specific student
+SELECT s.id, s.name, s.membership_status, p.amount AS penalty_amount
+FROM students s
+LEFT JOIN Penalties p ON s.id = p.student_id
+WHERE s.id = 3;  -- Replace 3 with the desired student ID
+/
+
+
+---------------------------------------------Task 11------------------------------------
+---------------------SQL Queries and Insertions
+
+-- This query retrieves information about sessions that are currently waiting for resources,
+-- along with details of the blocking sessions.
+
+SELECT 
+    w.sid AS "Waiting Session SID",                                  
+    w.serial# AS "Waiting Serial#",                                   
+    w.blocking_session AS "Blocker Session SID",      
+    w.seconds_in_wait AS "Waiting Period",                 
+    bs.serial# AS "Blocker Serial#",                                     
+    w.username AS "Waiting User",                     
+    bs.username AS "Blocker User"
+FROM 
+    v$session w            
+JOIN 
+    v$session bs ON w.blocking_session = bs.sid 
+WHERE 
+    w.blocking_session IS NOT NULL;
+
+
+-- Inserting sample data into the 'students' table
+INSERT INTO students (id, name, membership_status)
+VALUES (1, 'John Doe', 'Active');
+INSERT INTO students (id, name, membership_status)
+VALUES (2, 'John Smith', 'Suspended');
+INSERT INTO students (id, name, membership_status)
+VALUES (3, 'John Smith', 'Suspended');
+
+
+-- Inserting data into the 'BookTypes' table
+INSERT INTO BookTypes (id, type_name, fee_rate)
+VALUES (1, 'Regular', 1);
+INSERT INTO BookTypes (id, type_name, fee_rate)
+VALUES (2, 'Reference', 2);
+
+-- Inserting data into the 'Books' table
+INSERT INTO Books (id, title, author, availability, type_id)
+VALUES (1, 'The Great Gatsby', 'F. Scott Fitzgerald', 'Borrowed', 1);
+INSERT INTO Books (id, title, author, availability, type_id)
+VALUES (2, 'Java Programming', 'Herbert Schildt', 'Available', 2);
+INSERT INTO user1.Books (id, title, author, availability, type_id)
+VALUES (3, 'Java Programming', 'Herbert Schildt', 'Available', 2);
+
+-- Inserting data into the 'BorrowingRecords' table
+INSERT INTO BorrowingRecords (id, book_id, student_id, borrow_date, return_date, status)
+VALUES (1, 1, 1, TO_DATE('2024-11-01', 'YYYY-MM-DD'), TO_DATE('2024-11-10', 'YYYY-MM-DD'), 'Borrowed');
+INSERT INTO BorrowingRecords (id, book_id, student_id, borrow_date, return_date, status)
+VALUES (3, 3, 3, TO_DATE('2024-9-02', 'YYYY-MM-DD'), TO_DATE('2024-9-15', 'YYYY-MM-DD'), 'Borrowed');
+INSERT INTO BorrowingRecords (id, book_id, student_id, borrow_date, return_date, status)
+VALUES (4, 2, 1, TO_DATE('2024-9-05', 'YYYY-MM-DD'), null, 'Borrowed');
+
+-- Selecting all rows from BorrowingRecords to view the inserted data
+SELECT * FROM BorrowingRecords;
+
+-- Calculating total penalties for each student
+SELECT student_id, SUM(amount) AS total_penalties
+FROM penalties
+WHERE amount > 0
+GROUP BY student_id;
+
+-- Selecting specific student details
+SELECT id, name, membership_status
+FROM students
+WHERE id = 3;
+
+-- Executing the procedure to suspend students with penalties above the threshold
+EXEC suspend_students_if_penalties_above_threshold;
+
+
+
+
+
+
+
+-------------------------------------------USER 1 SCHEMA-------------------------------------------
+
+----------------------------------------------task10-------------------------
+-----------------------Starting the transaction with SERIALIZABLE isolation level
+
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+-- Updating the status of the record in the BorrowingRecords table (the book being updated)
+UPDATE usermanager.BorrowingRecords
+SET status = 'Returned'
+WHERE id = 1;  -- You need to choose the row that will be locked
+-- We do not perform COMMIT here to keep the lock active
+
+commit;
+
+------------------------------------TASK12-------------------------------
+
+-- step1: This query updates the title of a specific book in the "Books" table. 
+-- It changes the "Title" field to 'Updated Title' for the record where "ID" equals 1.
+UPDATE Books
+    SET Title = 'Updated Title'           
+    WHERE ID = 1;  
+    
+-- step3: This query updates the status of a borrowing record in the "BorrowingRecords" table, 
+-- which is part of the "usermanager" schema. 
+-- It sets the "Status" field to 'Returned' for the record where "ID" equals 1.
+UPDATE usermanager.BorrowingRecords       
+    SET Status = 'Returned'         
+    WHERE ID = 1;
+
+
+
+----------------------------------------------------USER 2 SCHEMA-----------------------------------------
+----------------------------------------------------task10------------------------------------------
+------------------Starting the transaction with SERIALIZABLE isolation level
+
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+-- Trying to insert a penalty for the student into the Penalties table
+INSERT INTO usermanager.Penalties (id, student_id, amount, reason)
+VALUES (1, 3, 50, 'Late Return');  -- Specify the student, amount, and reason
+
+-- This query will stop and wait until the row lock in the BorrowingRecords table is released
+
+----------------------------------------------task12----------------------------------------------
+
+-- step2: This query updates the status of a borrowing record in the "BorrowingRecords" table 
+-- under the "usermanager" schema. It sets the "Status" field to 'Borrowed' for the record 
+-- where "ID" equals 1. The changes will be committed after this statement.
+
+UPDATE usermanager.BorrowingRecords     
+    SET Status = 'Borrowed'    
+    WHERE ID = 1;
+
+commit; -- This command saves all the changes made in the current transaction to the database.
+
+-- step4: This query updates the title of a book in the "Books" table under the "user1" schema.
+-- It changes the "Title" field to 'Updated Title 2' for the record where "ID" equals 1.
+
+UPDATE user1.Books  
+    SET Title = 'Updated Title 2' 
+    WHERE ID = 1;
+
+--------------------------------------------------------------------------------------------------------------------------------------
